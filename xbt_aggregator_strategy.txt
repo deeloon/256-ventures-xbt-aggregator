@@ -1,0 +1,159 @@
+//@version=2
+strategy("XBT Signal Aggregator", overlay=false, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// HELPER FUNCTIONS
+
+getZ(o, l)=>
+    mean = sum(o, l) / l
+    stDev = stdev(o, l)
+    z = (o - mean) / stDev
+
+// 1. MVWAP 
+TimeFrame = input('M')
+start = security(tickerid, TimeFrame, time)
+
+newSession = iff(change(start), 1, 0)
+
+vwapsum = iff(newSession, hl2*volume, vwapsum[1]+hl2*volume)
+volsum = iff(newSession, volume, volsum[1]+volume)
+v2sum = iff(newSession, volume*hl2*hl2, v2sum[1]+volume*hl2*hl2)
+myvwap = vwapsum/volsum
+dev = sqrt(max(v2sum/volsum - myvwap*myvwap, 0))
+
+Coloring=close>myvwap?green:red
+av=myvwap
+showcol = input(false,title="Show barcolors")
+showPrevVWAP = input(false, title="Show previous VWAP close")
+prevwap = iff(newSession, myvwap[1], prevwap[1])
+//plot(showPrevVWAP ? prevwap : na, style=circles, color=close > prevwap ? green : red)
+
+
+// 2. Funding Rates 
+premiumIndexPeriod = security("BITMEX:XBTUSDPI", period, close)
+interestBase = security("BITMEX:XBTBON", period, close)
+interestQuote = security("BITMEX:USDBON", period, close)
+interestRate = (interestQuote - interestBase) / 3
+midlineVal = interestRate
+fundingModifierRaw = interestRate - premiumIndexPeriod
+fundingModifier = (fundingModifierRaw >= 0.0005) ? 0.0005 : (fundingModifierRaw <= -0.0005) ? -0.0005 : fundingModifierRaw
+fundingRateRaw = (premiumIndexPeriod + fundingModifier)
+fundingRateEMA = ema(fundingRateRaw, 9)
+
+funding_rate = fundingRateEMA
+
+// 3. 50MA Slope
+
+
+daily = security(tickerid,'D',close)
+ma_len = input(defval=50)
+slope = roc(vwma(close, ma_len), 1) * 63.92
+
+// 5a. SuperTrend v1 (Long Term)
+
+Factor=input(title="Super Trend", defval=3, minval=1,maxval = 100)
+ATR=input(title="ATR", defval=7, minval=1,maxval = 100)
+
+supertrend(src_close) =>
+    src_hl2 = security(tickerid, '1W', hl2)
+    Up= src_hl2-(Factor*atr(ATR))
+    Dn= src_hl2+(Factor*atr(ATR))
+    
+    TUp=src_close[1]>TUp[1]? max(Up,TUp[1]) : Up
+    TDown=src_close[1]<TDown[1]? min(Dn,TDown[1]) : Dn
+    Trend = src_close > TDown[1] ? 1: src_close < TUp[1]? -1: nz(Trend[1],1)
+    
+Trend = security(tickerid, '1W', supertrend(close))
+
+//Tsl = Trend == 1 ? 1 : -1 
+
+// 5. SuperTrend v2 (Short Term)
+
+length = input(type=integer, defval=4)
+mult = input(type=float, step=0.1, defval=2.0)
+wicks=false
+atr = mult * atr(length)
+
+longStop = hl2 - atr
+longStopPrev = nz(longStop[1], longStop)
+longStop := (wicks ? low[1] : close[1]) > longStopPrev ? max(longStop, longStopPrev) : longStop
+
+shortStop = hl2 + atr
+shortStopPrev = nz(shortStop[1], shortStop)
+shortStop := (wicks ? high[1] : close[1]) < shortStopPrev ? min(shortStop, shortStopPrev) : shortStop
+
+dir = 1
+dir := nz(dir[1], dir)
+dir := dir == -1 and (wicks ? high : close) > shortStopPrev ? 1 : dir == 1 and (wicks ? low : close) < longStopPrev ? -1 : dir
+
+// 5. (For Tops) OBV Z-Score
+
+lookback = input(100, title="OBV Lookback Length", minval=1)
+
+src = close
+obv= 0.0
+obv := (src == src[1]) ? nz(obv[1]) : (src < src[1]) ? nz(obv[1]) - volume : nz(obv[1]) + volume
+zScore = getZ(obv, lookback)
+
+// 6. Volume Extremes
+
+vol_lookback = 90 
+vol_zScore = getZ(volume, vol_lookback)
+
+// AGGREGATING THEM ALL 
+
+myvwap_check = close > myvwap[2]
+funding_check = funding_rate < 0 
+maslope_check = slope > 0 
+zscore_high_check = zScore >= 2.8
+zscore_bottom_check = zScore <= -2
+vol_high_check = vol_zScore >= 2.75
+
+super_htf_buySignal = Trend == 1 
+super_htf_sellSignal = Trend == -1 
+super_buySignal = dir == 1 and dir[1] == -1
+super_sellSignal = dir == -1 and dir[1] == 1
+
+myvwap_plot_col = myvwap_check?green:maroon
+funding_plot_col = funding_check?green:maroon 
+maslope_plot_col = maslope_check?green:maroon
+zscore_plot_col = zscore_bottom_check?green:white
+zscore_high_plot_col = zscore_high_check?maroon:white
+
+//f_zscore_plot_col = f_zscore_high_check?white:maroon
+vol_plot_col = vol_high_check?white:maroon
+super_plot_col = iff(dir == 1 ? longStop : na, green, maroon)
+super_htf_plot_col = iff(Trend == 1, green, maroon)
+
+long_sum = myvwap_check + funding_check + zscore_bottom_check + super_buySignal + super_htf_buySignal + maslope_check
+barcol = (long_sum >= 3)? green:maroon
+
+testStartPeriod = (timestamp(2019,1,1,0,0))
+
+longCondition = long_sum >= 3 
+
+if(longCondition) and time > testStartPeriod 
+    strategy.entry("Long", strategy.long)
+    
+short_sum = myvwap_check + funding_check + zscore_high_check - super_sellSignal + super_htf_buySignal + maslope_check
+shortCondition = short_sum <= 1 and time > testStartPeriod
+if(shortCondition) 
+    barcolor = red
+    strategy.entry("Short", strategy.short)
+
+plotshape(2, title='MVWAP Check', color=myvwap_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(4, title='Funding Check', color=funding_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(6, title='MA Slope Check', color=maslope_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(8, title='SuperTrend LTF', color=super_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(10, title='SuperTrend HTF', color=super_htf_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(12, title='OBV Z-Score Bottom', color=zscore_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(14, title='OBV Z-Score High', color=zscore_high_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+
+
+barcolor(showcol ? barcol : na)
+
+hline(1, linestyle=solid)
+hline(3, linestyle=dashed)
+hline(5, linestyle=dashed)
+hline(7, linestyle=dashed)
+hline(9, linestyle=dashed)
+
