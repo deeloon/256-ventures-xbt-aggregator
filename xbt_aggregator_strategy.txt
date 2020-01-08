@@ -1,4 +1,4 @@
-//@version=2
+//@version=3
 strategy("XBT Signal Aggregator", overlay=false, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
 
 // HELPER FUNCTIONS
@@ -99,14 +99,22 @@ zScore = getZ(obv, lookback)
 vol_lookback = 90 
 vol_zScore = getZ(volume, vol_lookback)
 
+// 7. Futures Delta
+quarter = security("OKCOIN:BTCUSD3M", period, close)
+spot = security("OKCOIN:BTCUSDIDX", period, close)
+futures_x = (quarter-spot)/spot*100
+futures_delta = getZ(futures_x, 32 )
+
 // AGGREGATING THEM ALL 
 
 myvwap_check = close > myvwap[2]
-funding_check = funding_rate < 0 
+funding_check = funding_rate < 0
 maslope_check = slope > 0 
 zscore_high_check = zScore >= 2.8
 zscore_bottom_check = zScore <= -2
 vol_high_check = vol_zScore >= 2.75
+futures_delta_long = futures_delta < -2
+futures_delta_short = futures_delta > 2
 
 super_htf_buySignal = Trend == 1 
 super_htf_sellSignal = Trend == -1 
@@ -123,22 +131,28 @@ zscore_high_plot_col = zscore_high_check?maroon:white
 vol_plot_col = vol_high_check?white:maroon
 super_plot_col = iff(dir == 1 ? longStop : na, green, maroon)
 super_htf_plot_col = iff(Trend == 1, green, maroon)
+futures_delta_plot_col = futures_delta <= -3 ? lime : futures_delta <= -2 ? green : futures_delta <= 0 ? #005500 : futures_delta >= 3 ? red : futures_delta >= 2 ? #DD0000 : #900000
 
-long_sum = myvwap_check + funding_check + zscore_bottom_check + super_buySignal + super_htf_buySignal + maslope_check
+long_sum = myvwap_check + funding_check + zscore_bottom_check + super_buySignal + super_htf_buySignal + maslope_check + futures_delta_long
 barcol = (long_sum >= 3)? green:maroon
 
-testStartPeriod = (timestamp(2019,1,1,0,0))
+testStartPeriod = (timestamp(2018,1,1,0,0))
 
 longCondition = long_sum >= 3 
 
 if(longCondition) and time > testStartPeriod 
     strategy.entry("Long", strategy.long)
     
-short_sum = myvwap_check + funding_check + zscore_high_check - super_sellSignal + super_htf_buySignal + maslope_check
+short_sum = myvwap_check + funding_check + zscore_high_check - super_sellSignal + super_htf_buySignal + maslope_check + futures_delta_short
 shortCondition = short_sum <= 1 and time > testStartPeriod
 if(shortCondition) 
     barcolor = red
     strategy.entry("Short", strategy.short)
+    
+ind = longCondition ? 1 : shortCondition ? -1 : 0
+reversal = ind-ind[1] == 2 ? 1 : ind-ind[1] == -2 ? -1 : 0
+strategy.close("Long",reversal==1)
+strategy.close("Short", reversal ==1)
 
 plotshape(2, title='MVWAP Check', color=myvwap_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
 plotshape(4, title='Funding Check', color=funding_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
@@ -147,6 +161,7 @@ plotshape(8, title='SuperTrend LTF', color=super_plot_col, style=shape.circle, s
 plotshape(10, title='SuperTrend HTF', color=super_htf_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
 plotshape(12, title='OBV Z-Score Bottom', color=zscore_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
 plotshape(14, title='OBV Z-Score High', color=zscore_high_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
+plotshape(16, title='Futures Delta', color=futures_delta_plot_col, style=shape.circle, size=size.tiny, location=location.absolute)
 
 
 barcolor(showcol ? barcol : na)
