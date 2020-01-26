@@ -1,0 +1,67 @@
+//@version=4
+strategy(title='OKEx Premium / Discount',default_qty_type=strategy.percent_of_equity, default_qty_value=100, pyramiding=3)
+
+// Limit timeframe
+// === INPUT BACKTEST RANGE ===
+FromMonth = input(defval = 6, title = "From Month", minval = 1, maxval = 12)
+FromDay   = input(defval = 1, title = "From Day", minval = 1, maxval = 31)
+FromYear  = input(defval = 2019, title = "From Year", minval = 2016)
+ToMonth   = input(defval = 1, title = "To Month", minval = 1, maxval = 12)
+ToDay     = input(defval = 1, title = "To Day", minval = 1, maxval = 31)
+ToYear    = input(defval = 2100, title = "To Year", minval = 2016)
+
+// === FUNCTION EXAMPLE ===
+start     = timestamp(FromYear, FromMonth, FromDay, 00, 00)  // backtest start window
+finish    = timestamp(ToYear, ToMonth, ToDay, 23, 59)        // backtest finish window
+window  = (time >= start) and (time <= finish) // create "within window of time"
+
+
+// Get futures delta
+getZ(o, l)=>
+    mean = sum(o, l) / l
+    stDev = stdev(o, l)
+    z = (o - mean) / stDev
+
+quarter = security("OKCOIN:BTCUSD3M", timeframe.period, close, barmerge.gaps_off,barmerge.lookahead_on)
+spot = security("OKCOIN:BTCUSDIDX", timeframe.period, close, barmerge.gaps_off,barmerge.lookahead_on)
+
+lookback = input(32)
+x = (quarter-spot) / spot*100
+z = getZ(x, lookback)
+grad_price = (1-close[1]/close)
+max_quantity = strategy.equity/close
+time_f = input(4)
+grad = sma(grad_price,time_f)
+
+var short = 0
+var skip = 1
+
+if(z <= -1.8 and window)
+    if (short == 1)
+        strategy.entry("long", strategy.long, when=window, qty=abs(max_quantity))
+        short := 0
+    if (short == 2)
+        strategy.entry("long", strategy.long, when=window, qty=abs(max_quantity/3*z))
+        short := 1
+    if(short > 2)
+        strategy.entry("long", strategy.long, when=window, qty=abs(max_quantity/3*z))
+        short := 2
+    
+if(z >= 1.9 and window)
+    if(short>1)
+        strategy.entry("short", strategy.short, when=window, qty=abs(max_quantity))
+        short := 3
+    if(short==1)
+        if(grad < 0.02)
+            strategy.entry("short", strategy.short, when=window, qty=abs(max_quantity/3*z))
+            short := 2
+        else
+            if(skip==1)
+                skip := 0
+            else
+                strategy.entry("short", strategy.short, when=window, qty=abs(max_quantity))
+                short := 2
+                skip := 1
+    if(short==0)
+        strategy.entry("short", strategy.short, when=window, qty=abs(max_quantity/3*z))
+        short := 1
